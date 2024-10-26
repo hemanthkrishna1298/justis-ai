@@ -430,12 +430,13 @@ builder.add_edge("human_expert", END)
 
 memory=MemorySaver()
 justis_ai_graph = builder.compile(checkpointer=memory, interrupt_before=["human_expert"])
+# justis_ai_graph = builder.compile()
 
 # %%
-from IPython.display import Image, display
+# from IPython.display import Image, display
 
-try:
-    display(Image(justis_ai_graph.get_graph(xray=True).draw_mermaid_png()))
-except Exception:
-    # This requires some extra dependencies and is optional
-    pass
+# try:
+#     display(Image(justis_ai_graph.get_graph(xray=True).draw_mermaid_png()))
+# except Exception:
+#     # This requires some extra dependencies and is optional
+#     pass
