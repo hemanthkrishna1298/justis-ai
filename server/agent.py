@@ -168,6 +168,48 @@ from langchain_core.tools import tool
 import fitz
 
 
+@tool
+def get_pdf_fields(pdf_type: Literal["eviction_response", "wage_claim"]) -> list[str]:
+    """Get the fields of a PDF form to be filled.
+    Args:
+        pdf_type (Literal["eviction_response", "wage_claim"]): The type of the PDF form.
+    Returns:
+        list[str]: The fields of the PDF form.
+    """
+
+    def get_fields(pdf_document):
+        # Extract field names, current values, and allowed values
+        fields = []
+        for page_num in range(len(pdf_document)):
+            page = pdf_document[page_num]
+            for widget in page.widgets():
+                field_name = widget.field_name
+
+                if("#pageSet" in field_name):
+                    continue
+
+                allowed_values = None
+
+                if widget.field_type_string == "CheckBox":
+                    allowed_values = widget.button_states()['normal']
+                elif widget.field_type_string == "ComboBox":
+                    allowed_values = widget.choice_values
+
+                fields.append({
+                    "field_type": widget.field_type_string,
+                    "field_name": field_name,
+                    "field_label": widget.field_label,
+                    "field_value": widget.field_value or "",
+                    "allowed_values": allowed_values
+                })
+
+        return fields
+
+    pdf_path = f"{pdf_type}.pdf"
+    pdf_document = fitz.open(pdf_path)
+    fields = get_fields(pdf_document)
+    return [field["field_name"] for field in fields]
+
 
 @tool
 def fill_pdf_form(pdf_type: Literal["eviction_response", "wage_claim"], field_value_dict: dict) -> str:
