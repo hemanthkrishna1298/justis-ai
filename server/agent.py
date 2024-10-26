@@ -241,10 +241,14 @@ form_filling_assistant_runnable = form_filling_assistant_prompt | llm.bind_tools
 # ### Legal Info and Guidance Assistant
 
 # %%
-from langchain_community.tools.ddg_search.tool import DuckDuckGoSearchResults
+# from langchain_community.tools.ddg_search.tool import DuckDuckGoSearchResults
+import requests
+from bs4 import BeautifulSoup
+import urllib
+import math
 
 @tool
-def legal_info_getter(search_query: str):
+def legal_info_getter(search_query: str)->str:
     """Get legal information based on the search query.
     Args:
         search_query (str): The search query.
@@ -252,9 +256,79 @@ def legal_info_getter(search_query: str):
         str: The search results containing legal information.
     """
 
-    search_engine = DuckDuckGoSearchResults()
+#     search_engine = DuckDuckGoSearchResults()
 
-    return search_engine.invoke(search_query)
+#     return search_engine.invoke(search_query)
+
+# def get_legal_info(search_query):
+
+    query = search_query
+    def get_search_results(query, num_pages=5):
+        """Retrieve links to articles from search results for the query."""
+        
+        
+        base_url = "https://www.law.cornell.edu"
+        search_url_template = f"{base_url}/search/wex/{{query}}?page={{page}}"
+
+        article_links = []
+        for page in range(num_pages):
+            search_url = search_url_template.format(query=query, page=page)
+            response = requests.get(search_url)
+            if response.status_code != 200:
+                print(f"Failed to retrieve page {page + 1} of search results.")
+                continue
+            soup = BeautifulSoup(response.text, "html.parser")
+            # Find all search result items in the page
+            results = soup.select("li.search-result h3.title a")
+            # Extract the href attribute for each result
+            for result in results:
+                article_links.append(result["href"])
+            # time.sleep(1)  # Pause to avoid overloading the server
+        return article_links
+
+    def get_article_content(url):
+        """Retrieve and parse the main content from an article page."""
+        response = requests.get(url)
+        if response.status_code != 200:
+            print(f"Failed to retrieve article at {url}")
+            return None
+        soup = BeautifulSoup(response.text, "html.parser")
+        # Extract the main content from the article page
+        main_content_div = soup.find("div", id="main-content")
+        if not main_content_div:
+            return None
+        content = []
+        # Extract paragraphs within the main content div
+        for paragraph in main_content_div.find_all("p"):
+            content.append(paragraph.get_text())
+        return "\n".join(content)
+
+    def legal_info_call(query):
+        """Perform the search and retrieve the content of the top articles."""
+        
+        num_articles = 10
+        # Step 1: Get the search results (first num_articles results)
+        article_links = get_search_results(query, num_pages=math.ceil(num_articles / 10))
+
+        # Step 2: Extract content from each article
+        articles_content = {}
+        for link in article_links:
+            print(f"Retrieving content from {link}")
+            content = get_article_content(link)
+            if content:
+                articles_content[link] = content
+            # time.sleep(1)  # Pause to avoid overloading the server
+
+        return articles_content
+    
+    articles = legal_info_call(urllib.parse.quote_plus(query))
+
+    send_string= ""
+    
+    for url, content in articles.items():
+        send_string+=content
+
+    return send_string
 
 # %%
 legal_info_and_guidance_prompt = ChatPromptTemplate(
@@ -435,7 +509,8 @@ memory=MemorySaver()
 justis_ai_graph = builder.compile(checkpointer=memory, interrupt_before=["human_expert"])
 # justis_ai_graph = builder.compile()
 
-# %%
+
+# # %%
 # from IPython.display import Image, display
 
 # try:
@@ -443,3 +518,35 @@ justis_ai_graph = builder.compile(checkpointer=memory, interrupt_before=["human_
 # except Exception:
 #     # This requires some extra dependencies and is optional
 #     pass
+import uuid
+
+questions = [
+    "Hi!",
+    "Can you help me with something?",
+    "I just got evicted by my landlord and I think it was unfair.",
+]
+
+thread_id = str(uuid.uuid4())
+
+config = {
+    "configurable": {
+        "client_id": "1234",
+        "thread_id": thread_id,
+    }
+}
+
+_printed = set()
+
+for i, question in enumerate(questions):
+    if i==0:
+        events = justis_ai_graph.stream(
+        {"messages": ("user", question), "chat_control": "ai"}, config, stream_mode="values"
+        )
+    else:
+        events = justis_ai_graph.stream(
+            {"messages": ("user", question)}, config, stream_mode="values"
+        )
+
+    for event in events:
+        _print_event(event, _printed)
+        print(event)
