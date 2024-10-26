@@ -93,3 +93,4 @@ typing_extensions==4.12.2
 urllib3==2.2.3
 wcwidth==0.2.13
 yarl==1.16.0
+beautifulsoup4==4.12.3
