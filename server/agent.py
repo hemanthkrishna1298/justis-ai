@@ -165,11 +165,52 @@ issue_identifying_assistant_runnable = issue_identifying_prompt | llm.bind_tools
 
 # %%
 from langchain_core.tools import tool
-from PyPDF2 import PdfReader, PdfWriter
+import fitz  # PyMuPDF
 
+
+# @tool
+# def get_pdf_fields(pdf_type: Literal["eviction_response", "wage_claim"])->list[str]:
+#     """Get the fields of a PDF form to be filled.
+#     Args:
+#         pdf_type (Literal["eviction_response", "wage_claim"]): The type of the PDF form.
+#     Returns:
+#         list[str]: The fields of the PDF form.
+#     """
+
+#     reader = PdfReader(f"{pdf_type}.pdf")
+#     return reader.get_fields().keys()
+
+# @tool
+# def fill_pdf_form(pdf_type: Literal["eviction_response", "wage_claim"], field_value_dict: dict)->str:
+#     """Fill a PDF form with the given field values and return a message indicating the success of the form filling.
+#     Args:
+#         pdf_type (Literal["eviction_response", "wage_claim"]): The type of the PDF form.
+#         field_value_dict (dict): The field values to fill in the PDF form.
+#     Returns:
+#         str: A message indicating the success of the form filling.
+#     """
+
+#     # Load the PDF
+#     reader = PdfReader(f"{pdf_type}.pdf")
+#     writer = PdfWriter()
+
+#     # Copy pages from reader to writer
+#     for page in reader.pages:
+#         writer.add_page(page)
+
+#     # Fill the form fields
+#     for field, value in field_value_dict.items():
+#         writer.update_page_form_field_values(writer.pages[0], {field: value})
+
+#     # Save the filled PDF to a new file
+#     output_pdf_path = f"filled_{pdf_type}.pdf"
+#     with open(output_pdf_path, "wb") as output_pdf:
+#         writer.write(output_pdf)
+
+#     return f"PDF form filled successfully."
 
 @tool
-def get_pdf_fields(pdf_type: Literal["eviction_response", "wage_claim"])->list[str]:
+def get_pdf_fields(pdf_type: Literal["eviction_response", "wage_claim"]) -> list[str]:
     """Get the fields of a PDF form to be filled.
     Args:
         pdf_type (Literal["eviction_response", "wage_claim"]): The type of the PDF form.
@@ -177,11 +218,41 @@ def get_pdf_fields(pdf_type: Literal["eviction_response", "wage_claim"])->list[s
         list[str]: The fields of the PDF form.
     """
 
-    reader = PdfReader(f"{pdf_type}.pdf")
-    return reader.get_fields().keys()
+    def get_fields(pdf_document):
+        # Extract field names, current values, and allowed values
+        fields = []
+        for page_num in range(len(pdf_document)):
+            page = pdf_document[page_num]
+            for widget in page.widgets():
+                field_name = widget.field_name
+
+                if("#pageSet" in field_name):
+                    continue
+
+                allowed_values = None
+
+                if widget.field_type_string == "CheckBox":
+                    allowed_values = widget.button_states()['normal']
+                elif widget.field_type_string == "ComboBox":
+                    allowed_values = widget.choice_values
+
+                fields.append({
+                    "field_type": widget.field_type_string,
+                    "field_name": field_name,
+                    "field_label": widget.field_label,
+                    "field_value": widget.field_value or "",
+                    "allowed_values": allowed_values
+                })
+
+        return fields
+
+    pdf_path = f"{pdf_type}.pdf"
+    pdf_document = fitz.open(pdf_path)
+    fields = get_fields(pdf_document)
+    return [field["field_name"] for field in fields]
 
 @tool
-def fill_pdf_form(pdf_type: Literal["eviction_response", "wage_claim"], field_value_dict: dict)->str:
+def fill_pdf_form(pdf_type: Literal["eviction_response", "wage_claim"], field_value_dict: dict) -> str:
     """Fill a PDF form with the given field values and return a message indicating the success of the form filling.
     Args:
         pdf_type (Literal["eviction_response", "wage_claim"]): The type of the PDF form.
@@ -190,24 +261,64 @@ def fill_pdf_form(pdf_type: Literal["eviction_response", "wage_claim"], field_va
         str: A message indicating the success of the form filling.
     """
 
-    # Load the PDF
-    reader = PdfReader(f"{pdf_type}.pdf")
-    writer = PdfWriter()
 
-    # Copy pages from reader to writer
-    for page in reader.pages:
-        writer.add_page(page)
+    def get_fields(pdf_document):
+        # Extract field names, current values, and allowed values
+        fields = []
+        for page_num in range(len(pdf_document)):
+            page = pdf_document[page_num]
+            for widget in page.widgets():
+                field_name = widget.field_name
 
-    # Fill the form fields
-    for field, value in field_value_dict.items():
-        writer.update_page_form_field_values(writer.pages[0], {field: value})
+                if("#pageSet" in field_name):
+                    continue
 
-    # Save the filled PDF to a new file
-    output_pdf_path = f"filled_{pdf_type}.pdf"
-    with open(output_pdf_path, "wb") as output_pdf:
-        writer.write(output_pdf)
+                allowed_values = None
 
-    return f"PDF form filled successfully."
+                if widget.field_type_string == "CheckBox":
+                    allowed_values = widget.button_states()['normal']
+                elif widget.field_type_string == "ComboBox":
+                    allowed_values = widget.choice_values
+
+                fields.append({
+                    "field_type": widget.field_type_string,
+                    "field_name": field_name,
+                    "field_label": widget.field_label,
+                    "field_value": widget.field_value or "",
+                    "allowed_values": allowed_values
+                })
+
+        return fields
+    
+    def write_to_pdf(pdf_document, fields):
+        with fitz.open(pdf_document) as doc:
+            for page in doc: 
+                widgets = page.widgets()
+                for widget in widgets:
+                    matching_field = [field for field in fields if field["field_name"] == widget.field_name]
+
+                    if(len(matching_field) == 0):
+                        continue
+                    
+                    field = matching_field[0]
+                    widget.field_value = field["value"]
+                    widget.update()
+            doc.saveIncr()
+    
+    pdf_path = f"{pdf_type}.pdf"
+    pdf_document = fitz.open(pdf_path)
+    fields = get_fields(pdf_document)
+
+    # Update fields with provided values
+    for field in fields:
+        if field["field_name"] in field_value_dict:
+            field["value"] = field_value_dict[field["field_name"]]
+        else:
+            field["value"] = ""
+
+    write_to_pdf(pdf_path, fields)
+    return "PDF form filled successfully."
+
 
 # %%
 llm = ChatAnthropic(model="claude-3-5-sonnet-20241022", temperature=0, api_key=os.getenv("ANTHROPIC_API_KEY"))
@@ -432,10 +543,45 @@ memory=MemorySaver()
 justis_ai_graph = builder.compile(checkpointer=memory, interrupt_before=["human_expert"])
 
 # %%
-from IPython.display import Image, display
+# from IPython.display import Image, display
 
-try:
-    display(Image(justis_ai_graph.get_graph(xray=True).draw_mermaid_png()))
-except Exception:
-    # This requires some extra dependencies and is optional
-    pass
+# try:
+#     display(Image(justis_ai_graph.get_graph(xray=True).draw_mermaid_png()))
+# except Exception:
+#     # This requires some extra dependencies and is optional
+#     pass
+
+if __name__ == "__main__":
+
+    import uuid
+
+    questions = [
+        "Hi!",
+        "Can you help me with something?",
+        "I wanna fill out a wage claim form but idk how to",
+    ]
+
+    thread_id = str(uuid.uuid4())
+
+    config = {
+        "configurable": {
+            "client_id": "1234",
+            "thread_id": thread_id,
+        }
+    }
+
+    _printed = set()
+
+    for i, question in enumerate(questions):
+        if i==0:
+            events = justis_ai_graph.stream(
+            {"messages": ("user", question), "chat_control": "ai"}, config, stream_mode="values"
+            )
+        else:
+            events = justis_ai_graph.stream(
+                {"messages": ("user", question)}, config, stream_mode="values"
+            )
+
+        for event in events:
+            _print_event(event, _printed)
+            print(event)
