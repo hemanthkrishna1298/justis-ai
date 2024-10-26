@@ -178,7 +178,10 @@ def get_pdf_fields(pdf_type: Literal["eviction_response", "wage_claim"])->list[s
     """
 
     reader = PdfReader(f"{pdf_type}.pdf")
-    return reader.get_fields().keys()
+    metadata = reader.metadata
+    return [str(metadata)]
+    #return ["generic wage claim doc"]
+    #return reader.get_fields().keys()
 
 @tool
 def fill_pdf_form(pdf_type: Literal["eviction_response", "wage_claim"], field_value_dict: dict)->str:
@@ -490,7 +493,7 @@ builder.add_node("human_expert", human_node)
 
 builder.add_edge(START, "primary_assistant")
 builder.add_conditional_edges("primary_assistant", cond_edge_router, ["enter_issue_identifying_assistant", "enter_form_filling_assistant", "enter_escalation_assistant", END])
-builder.add_conditional_edges("issue_identifying_assistant", cond_edge_router, ["enter_legal_info_and_guidance_assistant", "enter_escalation_assistant"])
+builder.add_conditional_edges("issue_identifying_assistant", cond_edge_router, ["enter_legal_info_and_guidance_assistant", "enter_escalation_assistant", END])
 builder.add_conditional_edges("legal_info_and_guidance_assistant", custom_tools_condition, ["legal_info_tool", END])
 builder.add_edge("legal_info_tool", "legal_info_and_guidance_assistant")
 builder.add_conditional_edges("form_filling_assistant", custom_tools_condition, ["form_filling_tool", END])
@@ -504,6 +507,8 @@ builder.add_edge("human_expert", END)
 
 memory=MemorySaver()
 justis_ai_graph = builder.compile(checkpointer=memory, interrupt_before=["human_expert"])
+# justis_ai_graph = builder.compile()
+
 
 # # %%
 # from IPython.display import Image, display
