@@ -305,6 +305,9 @@ class ToFormIsFilled(BaseModel):
         description="The link to the filled pdf form."
     )
 
+class ToMidFormFilling(BaseModel):
+    """Supposed to transfer here when the PDF form is in the middle of being filled."""
+    pass
 # %%
 llm = ChatAnthropic(model="claude-3-5-sonnet-20241022", temperature=0, api_key=os.getenv("ANTHROPIC_API_KEY"))
 
@@ -326,7 +329,8 @@ form_filling_assistant_prompt = ChatPromptTemplate(
 form_filling_assistant_tools = [
     get_pdf_fields,
     fill_pdf_form,
-    ToFormIsFilled
+    ToFormIsFilled,
+    ToMidFormFilling
 ]
 
 form_filling_assistant_runnable = form_filling_assistant_prompt | llm.bind_tools(form_filling_assistant_tools)
@@ -562,6 +566,8 @@ def custom_tools_condition(state: ChatState):
             return "legal_info_tool"
         elif tool_calls[0]["name"]==ToFormIsFilled.__name__:
             return "form_is_filled"
+        elif tool_calls[0]["name"]==ToMidFormFilling.__name__:
+            return "mid_form_filling"
         elif tool_calls[0]["name"]=="get_pdf_fields" or tool_calls[0]["name"]=="fill_pdf_form":
             return "form_filling_tool"
     
@@ -569,6 +575,9 @@ def custom_tools_condition(state: ChatState):
 
 def form_is_filled_node(state: ChatState)->ChatState:
     return {"pdf_returned": True, "pdf_link": state['messages'][-1].tool_calls[0]['args']['pdf_link']}
+
+def mid_form_filling_node(state: ChatState)->ChatState:
+    return
 # "pdf_link": state["messages"].content
 # %%
 from langgraph.checkpoint.memory import MemorySaver
@@ -585,6 +594,7 @@ builder.add_node("legal_info_and_guidance_assistant", Assistant(legal_info_and_g
 builder.add_node("legal_info_tool", ToolNode(legal_info_and_guidance_tools))
 builder.add_node("enter_form_filling_assistant", create_entry_node("Form Filling Assistant"))
 builder.add_node("form_filling_assistant", Assistant(form_filling_assistant_runnable))
+builder.add_node("mid_form_filling", mid_form_filling_node)
 builder.add_node("form_is_filled", form_is_filled_node)
 builder.add_node("form_filling_tool", ToolNode(form_filling_assistant_tools))
 builder.add_node("enter_escalation_assistant", create_entry_node("Escalation Assistant"))
@@ -596,7 +606,8 @@ builder.add_conditional_edges("primary_assistant", cond_edge_router, ["enter_iss
 builder.add_conditional_edges("issue_identifying_assistant", cond_edge_router, ["enter_legal_info_and_guidance_assistant", "enter_escalation_assistant", END])
 builder.add_conditional_edges("legal_info_and_guidance_assistant", custom_tools_condition, ["legal_info_tool", END])
 builder.add_edge("legal_info_tool", "legal_info_and_guidance_assistant")
-builder.add_conditional_edges("form_filling_assistant", custom_tools_condition, ["form_filling_tool", "form_is_filled", END])
+builder.add_conditional_edges("form_filling_assistant", custom_tools_condition, ["form_filling_tool", "form_is_filled","mid_form_filling", END])
+builder.add_edge("mid_form_filling", "form_filling_assistant")
 builder.add_edge("form_filling_tool", "form_filling_assistant")
 builder.add_edge("form_is_filled", END)
 builder.add_edge("enter_issue_identifying_assistant", "issue_identifying_assistant")
@@ -612,11 +623,11 @@ justis_ai_graph = builder.compile(checkpointer=memory, interrupt_before=["human_
 
 
 # # %%
-# from IPython.display import Image, display
+from IPython.display import Image, display
 
-# try:
-#     display(Image(justis_ai_graph.get_graph(xray=True).draw_mermaid_png()))
-# except Exception:
-#     # This requires some extra dependencies and is optional
-#     pass
+try:
+    display(Image(justis_ai_graph.get_graph(xray=True).draw_mermaid_png()))
+except Exception:
+    # This requires some extra dependencies and is optional
+    pass
 
