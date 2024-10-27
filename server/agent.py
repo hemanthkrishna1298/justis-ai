@@ -36,6 +36,8 @@ from langgraph.graph.message import AnyMessage, add_messages
 
 class ChatState(MessagesState):
     chat_control: Literal["ai", "human_expert"]
+    pdf_returned: bool
+    pdf_link: str
 
 # %%
 from langchain_anthropic import ChatAnthropic
@@ -108,7 +110,8 @@ primary_assisant_prompt = ChatPromptTemplate(
             d. The user is just talking without it being clear that they need legal help. In this case, continue the conversation with them.
          2. Do not let the conversation stray off-topic. Do not explicitly mention your role of identifying the agent to transfer to.
          3. Only when you have successfully identified the type of agent to transfer to, call a function to transfer to the appropriate agent. Tell the user that you are transferring them to appropriate resources.
-         4. If the user asks for help pertaining to a type outside of the specified types, tell them that you will escalate the issue to a human expert and escalate the conversation to a human."""
+         4. If the user asks for help pertaining to a type outside of the specified types, tell them that you will escalate the issue to a human expert and escalate the conversation to a human.
+         5. If the form filling assistant is in the middle of filling a form, keep transferring to the form filling assistant till the form is completely filled."""
          ),
          ("placeholder", "{messages}"),
     ]
@@ -166,6 +169,7 @@ issue_identifying_assistant_runnable = issue_identifying_prompt | llm.bind_tools
 # %%
 from langchain_core.tools import tool
 import fitz
+from google.cloud import storage
 
 
 @tool
@@ -213,12 +217,12 @@ def get_pdf_fields(pdf_type: Literal["eviction_response", "wage_claim"]) -> list
 
 @tool
 def fill_pdf_form(pdf_type: Literal["eviction_response", "wage_claim"], field_value_dict: dict) -> str:
-    """Fill a PDF form with the given field values and return a message indicating the success of the form filling.
+    """Fill a PDF form with the given field values and return a message indicating the success of the form filling. PDF is only filled when all required values have been provided.
     Args:
         pdf_type (Literal["eviction_response", "wage_claim"]): The type of the PDF form.
         field_value_dict (dict): The field values to fill in the PDF form.
     Returns:
-        str: A message indicating the success of the form filling.
+        str: A link to the pdf that was successfully filled.
     """
 
 
@@ -265,6 +269,17 @@ def fill_pdf_form(pdf_type: Literal["eviction_response", "wage_claim"], field_va
                     widget.update()
             doc.saveIncr()
     
+    def upload_to_google_cloud_storage(project_id, pdf_document, bucket_name, blob_name):
+        storage_client = storage.Client(project=project_id)
+        bucket = storage_client.bucket(bucket_name)
+        blob = bucket.blob(blob_name)
+        blob.upload_from_filename(pdf_document)
+
+            # Construct and return the public URL
+        public_url = f"https://storage.googleapis.com/{bucket_name}/{blob_name}"
+        return public_url
+
+
     pdf_path = f"{pdf_type}.pdf"
     pdf_document = fitz.open(pdf_path)
     fields = get_fields(pdf_document)
@@ -277,7 +292,18 @@ def fill_pdf_form(pdf_type: Literal["eviction_response", "wage_claim"], field_va
             field["value"] = ""
 
     write_to_pdf(pdf_path, fields)
-    return "PDF form filled successfully."
+    pdf_link = upload_to_google_cloud_storage("justist-ai", pdf_path, "justis", f"{pdf_type}_filled.pdf")
+    return pdf_link
+
+class ToFormIsFilled(BaseModel):
+    """Supposed to transfer here when the PDF form is filled successfully."""
+
+    form_filled: bool = Field(
+        description="Whether the form is filled or not."
+    )
+    pdf_link: str = Field(
+        description="The link to the filled pdf form."
+    )
 
 # %%
 llm = ChatAnthropic(model="claude-3-5-sonnet-20241022", temperature=0, api_key=os.getenv("ANTHROPIC_API_KEY"))
@@ -299,7 +325,8 @@ form_filling_assistant_prompt = ChatPromptTemplate(
 
 form_filling_assistant_tools = [
     get_pdf_fields,
-    fill_pdf_form
+    fill_pdf_form,
+    ToFormIsFilled
 ]
 
 form_filling_assistant_runnable = form_filling_assistant_prompt | llm.bind_tools(form_filling_assistant_tools)
@@ -523,7 +550,7 @@ def cond_edge_router(
         elif tool_calls[0]["name"] == ToHumanExpert.__name__:
             return "human_expert"
 
-    raise ValueError("Invalid route")
+    # raise ValueError("Invalid route")
 
 def custom_tools_condition(state: ChatState):
     route = tools_condition(state)
@@ -533,11 +560,16 @@ def custom_tools_condition(state: ChatState):
     if tool_calls:
         if tool_calls[0]["name"]=="legal_info_getter":
             return "legal_info_tool"
+        elif tool_calls[0]["name"]==ToFormIsFilled.__name__:
+            return "form_is_filled"
         elif tool_calls[0]["name"]=="get_pdf_fields" or tool_calls[0]["name"]=="fill_pdf_form":
             return "form_filling_tool"
     
     raise ValueError("Invalid route")
 
+def form_is_filled_node(state: ChatState)->ChatState:
+    return {"pdf_returned": True, "pdf_link": state['messages'][-1].tool_calls[0]['args']['pdf_link']}
+# "pdf_link": state["messages"].content
 # %%
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph, START
@@ -553,6 +585,7 @@ builder.add_node("legal_info_and_guidance_assistant", Assistant(legal_info_and_g
 builder.add_node("legal_info_tool", ToolNode(legal_info_and_guidance_tools))
 builder.add_node("enter_form_filling_assistant", create_entry_node("Form Filling Assistant"))
 builder.add_node("form_filling_assistant", Assistant(form_filling_assistant_runnable))
+builder.add_node("form_is_filled", form_is_filled_node)
 builder.add_node("form_filling_tool", ToolNode(form_filling_assistant_tools))
 builder.add_node("enter_escalation_assistant", create_entry_node("Escalation Assistant"))
 builder.add_node("escalation_assistant", Assistant(escalation_assistant_runnable))
@@ -563,8 +596,9 @@ builder.add_conditional_edges("primary_assistant", cond_edge_router, ["enter_iss
 builder.add_conditional_edges("issue_identifying_assistant", cond_edge_router, ["enter_legal_info_and_guidance_assistant", "enter_escalation_assistant", END])
 builder.add_conditional_edges("legal_info_and_guidance_assistant", custom_tools_condition, ["legal_info_tool", END])
 builder.add_edge("legal_info_tool", "legal_info_and_guidance_assistant")
-builder.add_conditional_edges("form_filling_assistant", custom_tools_condition, ["form_filling_tool", END])
+builder.add_conditional_edges("form_filling_assistant", custom_tools_condition, ["form_filling_tool", "form_is_filled", END])
 builder.add_edge("form_filling_tool", "form_filling_assistant")
+builder.add_edge("form_is_filled", END)
 builder.add_edge("enter_issue_identifying_assistant", "issue_identifying_assistant")
 builder.add_edge("enter_legal_info_and_guidance_assistant", "legal_info_and_guidance_assistant")
 builder.add_edge("enter_form_filling_assistant", "form_filling_assistant")
@@ -585,35 +619,4 @@ justis_ai_graph = builder.compile(checkpointer=memory, interrupt_before=["human_
 # except Exception:
 #     # This requires some extra dependencies and is optional
 #     pass
-import uuid
 
-questions = [
-    "Hi!",
-    "Can you help me with something?",
-    "I just got evicted by my landlord and I think it was unfair.",
-]
-
-thread_id = str(uuid.uuid4())
-
-config = {
-    "configurable": {
-        "client_id": "1234",
-        "thread_id": thread_id,
-    }
-}
-
-_printed = set()
-
-for i, question in enumerate(questions):
-    if i==0:
-        events = justis_ai_graph.stream(
-        {"messages": ("user", question), "chat_control": "ai"}, config, stream_mode="values"
-        )
-    else:
-        events = justis_ai_graph.stream(
-            {"messages": ("user", question)}, config, stream_mode="values"
-        )
-
-    for event in events:
-        _print_event(event, _printed)
-        print(event)
