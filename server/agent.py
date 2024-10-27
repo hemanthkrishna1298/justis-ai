@@ -123,7 +123,7 @@ primary_assisant_tools = [
     ToFormFillingAssistant
 ]
 
-primary_assistant_runnable = primary_assisant_prompt | llm.bind_tools(primary_assisant_tools)
+primary_assistant_runnable = primary_assisant_prompt | llm.bind_tools(primary_assisant_tools, tool_choice="any")
 
 # %% [markdown]
 # ### Issue Identifying Assistant
@@ -161,7 +161,7 @@ issue_identifying_assistant_tools = [
     ToLegalInfoAndGuidanceAssistant
 ]
 
-issue_identifying_assistant_runnable = issue_identifying_prompt | llm.bind_tools(issue_identifying_assistant_tools)
+issue_identifying_assistant_runnable = issue_identifying_prompt | llm.bind_tools(issue_identifying_assistant_tools, tool_choice="any")
 
 # %% [markdown]
 # ### Form Filling Assistant
@@ -222,7 +222,7 @@ def fill_pdf_form(pdf_type: Literal["eviction_response", "wage_claim"], field_va
         pdf_type (Literal["eviction_response", "wage_claim"]): The type of the PDF form.
         field_value_dict (dict): The field values to fill in the PDF form.
     Returns:
-        str: A link to the pdf that was successfully filled.
+        str: String indicating successful form filling.
     """
 
 
@@ -269,15 +269,15 @@ def fill_pdf_form(pdf_type: Literal["eviction_response", "wage_claim"], field_va
                     widget.update()
             doc.saveIncr()
     
-    def upload_to_google_cloud_storage(project_id, pdf_document, bucket_name, blob_name):
-        storage_client = storage.Client(project=project_id)
-        bucket = storage_client.bucket(bucket_name)
-        blob = bucket.blob(blob_name)
-        blob.upload_from_filename(pdf_document)
+    # def upload_to_google_cloud_storage(project_id, pdf_document, bucket_name, blob_name):
+    #     storage_client = storage.Client(project=project_id)
+    #     bucket = storage_client.bucket(bucket_name)
+    #     blob = bucket.blob(blob_name)
+    #     blob.upload_from_filename(pdf_document)
 
-            # Construct and return the public URL
-        public_url = f"https://storage.googleapis.com/{bucket_name}/{blob_name}"
-        return public_url
+    #         # Construct and return the public URL
+    #     public_url = f"https://storage.googleapis.com/{bucket_name}/{blob_name}"
+    #     return public_url
 
 
     pdf_path = f"{pdf_type}.pdf"
@@ -292,8 +292,8 @@ def fill_pdf_form(pdf_type: Literal["eviction_response", "wage_claim"], field_va
             field["value"] = ""
 
     write_to_pdf(pdf_path, fields)
-    pdf_link = upload_to_google_cloud_storage("justist-ai", pdf_path, "justis", f"{pdf_type}_filled.pdf")
-    return pdf_link
+    # pdf_link = upload_to_google_cloud_storage("justist-ai", pdf_path, "justis", f"{pdf_type}_filled.pdf")
+    return "Form has been filled successfully"
 
 class ToFormIsFilled(BaseModel):
     """Supposed to transfer here when the PDF form is filled successfully."""
@@ -326,7 +326,7 @@ form_filling_assistant_prompt = ChatPromptTemplate(
 form_filling_assistant_tools = [
     get_pdf_fields,
     fill_pdf_form,
-    ToFormIsFilled
+    # ToFormIsFilled
 ]
 
 form_filling_assistant_runnable = form_filling_assistant_prompt | llm.bind_tools(form_filling_assistant_tools)
@@ -560,8 +560,8 @@ def custom_tools_condition(state: ChatState):
     if tool_calls:
         if tool_calls[0]["name"]=="legal_info_getter":
             return "legal_info_tool"
-        elif tool_calls[0]["name"]==ToFormIsFilled.__name__:
-            return "form_is_filled"
+        # elif tool_calls[0]["name"]==ToFormIsFilled.__name__:
+        #     return "form_is_filled"
         elif tool_calls[0]["name"]=="get_pdf_fields" or tool_calls[0]["name"]=="fill_pdf_form":
             return "form_filling_tool"
     
@@ -585,7 +585,7 @@ builder.add_node("legal_info_and_guidance_assistant", Assistant(legal_info_and_g
 builder.add_node("legal_info_tool", ToolNode(legal_info_and_guidance_tools))
 builder.add_node("enter_form_filling_assistant", create_entry_node("Form Filling Assistant"))
 builder.add_node("form_filling_assistant", Assistant(form_filling_assistant_runnable))
-builder.add_node("form_is_filled", form_is_filled_node)
+# builder.add_node("form_is_filled", form_is_filled_node)
 builder.add_node("form_filling_tool", ToolNode(form_filling_assistant_tools))
 builder.add_node("enter_escalation_assistant", create_entry_node("Escalation Assistant"))
 builder.add_node("escalation_assistant", Assistant(escalation_assistant_runnable))
@@ -596,9 +596,9 @@ builder.add_conditional_edges("primary_assistant", cond_edge_router, ["enter_iss
 builder.add_conditional_edges("issue_identifying_assistant", cond_edge_router, ["enter_legal_info_and_guidance_assistant", "enter_escalation_assistant", END])
 builder.add_conditional_edges("legal_info_and_guidance_assistant", custom_tools_condition, ["legal_info_tool", END])
 builder.add_edge("legal_info_tool", "legal_info_and_guidance_assistant")
-builder.add_conditional_edges("form_filling_assistant", custom_tools_condition, ["form_filling_tool", "form_is_filled", END])
+builder.add_conditional_edges("form_filling_assistant", custom_tools_condition, ["form_filling_tool", END])
 builder.add_edge("form_filling_tool", "form_filling_assistant")
-builder.add_edge("form_is_filled", END)
+# builder.add_edge("form_is_filled", END)
 builder.add_edge("enter_issue_identifying_assistant", "issue_identifying_assistant")
 builder.add_edge("enter_legal_info_and_guidance_assistant", "legal_info_and_guidance_assistant")
 builder.add_edge("enter_form_filling_assistant", "form_filling_assistant")
